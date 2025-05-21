@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DPong - Ping Pong Ball Speed Tracker</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>DPong</h1>
+            <p>Its a Gentelmans Game</p>
+        </header>
+
+        <main>
+            <div class="main-content">
+                <!-- Player 1 Shot History -->
+                <div class="shot-history player1-history">
+                    <h2>Player 1 Shots</h2>
+                    <div class="shot-list" id="player1Shots"></div>
+                </div>
+
+                <!-- Video Feed and Controls -->
+                <div class="video-controls-container">
+                    <div class="video-container">
+                        <video id="video" autoplay playsinline></video>
+                        <canvas id="canvas"></canvas>
+                        <div id="overlay" class="overlay"></div>
+                    </div>
+                    <div class="controls">
+                        <button id="startCalibration" class="btn primary">Start Calibration</button>
+                        <button id="startGame" class="btn secondary" disabled>Start Game</button>
+                        <button id="stopGame" class="btn danger" disabled>Stop Game</button>
+                    </div>
+                    <div id="calibrationInstructions" class="instructions hidden">
+                        <h2>Calibration Instructions</h2>
+                        <p>Click on the orange ping pong ball in different areas of the table to help the system learn the ball's appearance under different lighting conditions.</p>
+                        <p>Click at least 5 different points where the ball might appear during the game.</p>
+                        <div class="progress">
+                            <div class="progress-bar" id="calibrationProgress"></div>
+                        </div>
+                        <p id="calibrationStatus">0/5 points calibrated</p>
+                    </div>
+                </div>
+
+                <!-- Player 2 Shot History -->
+                <div class="shot-history player2-history">
+                    <h2>Player 2 Shots</h2>
+                    <div class="shot-list" id="player2Shots"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/ballTracker.js"></script>
+    <script src="js/speedCalculator.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html> 
