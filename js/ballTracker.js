@@ -3,8 +3,8 @@ class BallTracker {
         this.video = videoElement;
         this.canvas = canvasElement;
         this.ctx = canvas.getContext('2d');
-        this.calibrationPoints = [];
         this.isCalibrating = false;
+        this.isTableCalibrating = false;
         this.isTracking = false;
         this.lastPosition = null;
         this.currentPosition = null;
@@ -12,22 +12,32 @@ class BallTracker {
         this.frameCount = 0;
         this.lastUpdateTime = 0;
         this.currentSpeed = 0;
-        this.lastPlayer = null; // Track which player last hit the ball
+        this.lastPlayer = null;
         this.player1Speed = 0;
         this.player2Speed = 0;
-        this.pixelsPerFoot = 100; // This will be calibrated based on table size
+        this.pixelsPerFoot = 100;
         this.shotHistory = {
             player1: [],
             player2: []
         };
-        // Much wider HSV ranges for initial detection
-        this.hsvRanges = {
-            h: { min: 0, max: 60 },     // Wider orange/red range
-            s: { min: 20, max: 255 },   // Much lower minimum saturation
-            v: { min: 20, max: 255 }    // Much lower minimum value
-        };
         
-        // Create debug overlay
+        // Table calibration points
+        this.tableCalibrationPoints = [];
+        this.requiredTablePoints = 2; // Start and end of table
+        
+        // Default HSV ranges for orange ping pong ball
+        this.hsvRanges = {
+            h: { min: 0, max: 30 },     // Orange/red range
+            s: { min: 100, max: 255 },  // High saturation for bright orange
+            v: { min: 100, max: 255 }   // High value for bright colors
+        };
+
+        // Motion tracking
+        this.motionHistory = [];
+        this.motionThreshold = 5; // Minimum pixel movement to consider as motion
+        this.maxMotionHistory = 10; // Number of frames to keep in motion history
+
+        // Debug overlay
         this.debugOverlay = document.createElement('div');
         this.debugOverlay.className = 'tracking-debug';
         this.debugOverlay.style.display = 'none';
@@ -44,13 +54,13 @@ class BallTracker {
                 video: { 
                     width: { ideal: 1280 },
                     height: { ideal: 720 },
-                    facingMode: 'environment' // Prefer the back camera if available
+                    frameRate: { ideal: 60 }, // Request high frame rate
+                    facingMode: 'environment'
                 } 
             });
             this.video.srcObject = stream;
             return new Promise((resolve) => {
                 this.video.onloadedmetadata = () => {
-                    // Set canvas size to match video dimensions
                     this.canvas.width = this.video.videoWidth;
                     this.canvas.height = this.video.videoHeight;
                     resolve();
@@ -64,7 +74,6 @@ class BallTracker {
 
     startCalibration() {
         this.isCalibrating = true;
-        this.calibrationPoints = [];
         this.canvas.style.cursor = 'crosshair';
         this.debugOverlay.style.display = 'none';
     }
@@ -72,12 +81,10 @@ class BallTracker {
     addCalibrationPoint(x, y) {
         if (!this.isCalibrating) return;
         
-        // Scale the coordinates to match the actual video dimensions
         const rect = this.canvas.getBoundingClientRect();
         const scaleX = this.canvas.width / rect.width;
         const scaleY = this.canvas.height / rect.height;
         
-        // Flip the x-coordinate to account for the mirrored video
         const scaledX = (rect.width - x) * scaleX;
         const scaledY = y * scaleY;
 
@@ -85,7 +92,7 @@ class BallTracker {
         this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
 
         // Get image data from the scaled coordinates with a larger sample area
-        const sampleSize = 20;
+        const sampleSize = 30;
         const imageData = this.ctx.getImageData(
             Math.max(0, Math.round(scaledX - sampleSize/2)),
             Math.max(0, Math.round(scaledY - sampleSize/2)),
@@ -93,40 +100,29 @@ class BallTracker {
             sampleSize
         );
 
-        // Debug the raw pixel data
-        console.log('Raw pixel data sample:', {
-            firstPixel: {
-                r: imageData.data[0],
-                g: imageData.data[1],
-                b: imageData.data[2],
-                a: imageData.data[3]
-            },
-            totalPixels: imageData.data.length / 4
-        });
-
-        // Calculate and log the HSV values at the calibration point
+        // Calculate HSV values
         const rgb = this.getAverageColor(imageData);
         const hsv = this.rgbToHsv(rgb.r, rgb.g, rgb.b);
         
-        console.log('Calibration point details:', {
-            position: { x: scaledX, y: scaledY },
-            rgb: rgb,
-            hsv: hsv,
-            sampleSize: sampleSize
-        });
+        // Update HSV ranges with tighter margins for better accuracy
+        this.hsvRanges = {
+            h: {
+                min: Math.max(0, hsv.h - 10),
+                max: Math.min(360, hsv.h + 10)
+            },
+            s: {
+                min: Math.max(0, hsv.s - 20),
+                max: Math.min(255, hsv.s + 20)
+            },
+            v: {
+                min: Math.max(0, hsv.v - 20),
+                max: Math.min(255, hsv.v + 20)
+            }
+        };
 
-        // Verify the color data is valid
-        if (rgb.r === 0 && rgb.g === 0 && rgb.b === 0) {
-            console.warn('Warning: Detected black color during calibration. This might indicate a problem with the video feed or canvas drawing.');
-        }
-
-        this.calibrationPoints.push({
-            x: scaledX,
-            y: scaledY,
-            colorData: imageData
-        });
-
-        // Draw calibration point at the scaled coordinates
+        console.log('Calibrated HSV ranges:', this.hsvRanges);
+        
+        // Draw calibration point
         this.ctx.beginPath();
         this.ctx.arc(scaledX, scaledY, 5, 0, 2 * Math.PI);
         this.ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
@@ -134,76 +130,267 @@ class BallTracker {
         this.ctx.strokeStyle = 'white';
         this.ctx.stroke();
 
-        // Draw a rectangle around the sampled area for debugging
-        this.ctx.strokeStyle = 'yellow';
-        this.ctx.strokeRect(
-            Math.max(0, Math.round(scaledX - sampleSize/2)),
-            Math.max(0, Math.round(scaledY - sampleSize/2)),
-            sampleSize,
-            sampleSize
-        );
-
-        // Update debug overlay to show calibration point and HSV values
-        this.debugOverlay.textContent = `Calibration: (${Math.round(scaledX)}, ${Math.round(scaledY)}) HSV: ${Math.round(hsv.h)}, ${Math.round(hsv.s)}, ${Math.round(hsv.v)}`;
-
-        // Create a temporary freeze effect
-        const freezeFrame = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-        
-        // Function to resume video feed
-        const resumeVideo = () => {
-            if (this.isCalibrating) {
-                this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
-                // Redraw all calibration points
-                this.calibrationPoints.forEach(point => {
-                    this.ctx.beginPath();
-                    this.ctx.arc(point.x, point.y, 5, 0, 2 * Math.PI);
-                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-                    this.ctx.fill();
-                    this.ctx.strokeStyle = 'white';
-                    this.ctx.stroke();
-                });
-                requestAnimationFrame(resumeVideo);
-            }
-        };
-
-        // Wait for 1 second before resuming
-        setTimeout(() => {
-            resumeVideo();
-        }, 1000);
+        // Finish calibration immediately after one point
+        this.finishCalibration();
     }
 
     finishCalibration() {
         this.isCalibrating = false;
         this.canvas.style.cursor = 'default';
-        this.updateHSVRange();
         this.debugOverlay.style.display = 'block';
     }
 
-    updateHSVRange() {
-        // Calculate HSV ranges based on calibration points with wider margins
-        const hsvValues = this.calibrationPoints.map(point => {
-            const rgb = this.getAverageColor(point.colorData);
-            return this.rgbToHsv(rgb.r, rgb.g, rgb.b);
-        });
+    startTableCalibration() {
+        this.isTableCalibrating = true;
+        this.tableCalibrationPoints = [];
+        this.canvas.style.cursor = 'crosshair';
+        this.debugOverlay.style.display = 'none';
+    }
 
-        // Update HSV ranges with wider margins for side view
-        this.hsvRanges = {
-            h: {
-                min: Math.max(0, Math.min(...hsvValues.map(v => v.h)) - 20),
-                max: Math.min(360, Math.max(...hsvValues.map(v => v.h)) + 20)
-            },
-            s: {
-                min: Math.max(0, Math.min(...hsvValues.map(v => v.s)) - 30),
-                max: Math.min(255, Math.max(...hsvValues.map(v => v.s)) + 30)
-            },
-            v: {
-                min: Math.max(0, Math.min(...hsvValues.map(v => v.v)) - 30),
-                max: Math.min(255, Math.max(...hsvValues.map(v => v.v)) + 30)
+    addTableCalibrationPoint(x, y) {
+        if (!this.isTableCalibrating) return;
+        
+        const rect = this.canvas.getBoundingClientRect();
+        const scaleX = this.canvas.width / rect.width;
+        const scaleY = this.canvas.height / rect.height;
+        
+        const scaledX = (rect.width - x) * scaleX;
+        const scaledY = y * scaleY;
+
+        this.tableCalibrationPoints.push({ x: scaledX, y: scaledY });
+
+        // Draw calibration point
+        this.ctx.beginPath();
+        this.ctx.arc(scaledX, scaledY, 5, 0, 2 * Math.PI);
+        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'white';
+        this.ctx.stroke();
+
+        // Draw line between points if we have more than one
+        if (this.tableCalibrationPoints.length > 1) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(this.tableCalibrationPoints[0].x, this.tableCalibrationPoints[0].y);
+            this.ctx.lineTo(this.tableCalibrationPoints[1].x, this.tableCalibrationPoints[1].y);
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            this.ctx.stroke();
+        }
+
+        // If we have both points, calculate pixels per foot
+        if (this.tableCalibrationPoints.length === this.requiredTablePoints) {
+            this.calculatePixelsPerFoot();
+            this.finishTableCalibration();
+        }
+    }
+
+    calculatePixelsPerFoot() {
+        const point1 = this.tableCalibrationPoints[0];
+        const point2 = this.tableCalibrationPoints[1];
+        
+        // Calculate distance in pixels
+        const dx = point2.x - point1.x;
+        const dy = point2.y - point1.y;
+        const pixelDistance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Standard table is 9 feet long
+        const tableLengthInFeet = 9;
+        
+        // Calculate pixels per foot
+        this.pixelsPerFoot = pixelDistance / tableLengthInFeet;
+        
+        console.log('Calibrated pixels per foot:', this.pixelsPerFoot);
+    }
+
+    finishTableCalibration() {
+        this.isTableCalibrating = false;
+        this.canvas.style.cursor = 'default';
+        this.debugOverlay.style.display = 'block';
+    }
+
+    startTracking() {
+        this.isTracking = true;
+        this.debugOverlay.style.display = 'block';
+        this.track();
+    }
+
+    stopTracking() {
+        this.isTracking = false;
+        this.debugOverlay.style.display = 'none';
+    }
+
+    track() {
+        if (!this.isTracking) return;
+
+        const currentTime = performance.now();
+        const deltaTime = (currentTime - this.lastUpdateTime) / 1000;
+        this.lastUpdateTime = currentTime;
+
+        // Clear the canvas
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        
+        // Draw the video frame
+        this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+        
+        const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+        const ballPosition = this.detectBall(imageData);
+
+        if (ballPosition) {
+            // Update motion history
+            this.updateMotionHistory(ballPosition);
+
+            // Only process if there's significant motion
+            if (this.hasSignificantMotion()) {
+                this.lastPosition = this.currentPosition;
+                this.currentPosition = ballPosition;
+
+                if (this.lastPosition && deltaTime > 0) {
+                    const dx = ballPosition.x - this.lastPosition.x;
+                    const dy = ballPosition.y - this.lastPosition.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    const distanceInFeet = distance / this.pixelsPerFoot;
+                    this.currentSpeed = distanceInFeet / deltaTime;
+
+                    const tableCenter = this.canvas.width / 2;
+                    if (dx > 0 && ballPosition.x < tableCenter) {
+                        if (this.lastPlayer !== 1) {
+                            this.lastPlayer = 1;
+                            this.player1Speed = this.currentSpeed;
+                            this.addShotToHistory(1, this.currentSpeed);
+                        }
+                    } else if (dx < 0 && ballPosition.x > tableCenter) {
+                        if (this.lastPlayer !== 2) {
+                            this.lastPlayer = 2;
+                            this.player2Speed = this.currentSpeed;
+                            this.addShotToHistory(2, this.currentSpeed);
+                        }
+                    }
+                }
+
+                // Draw ball position with motion indicator
+                this.ctx.beginPath();
+                this.ctx.arc(ballPosition.x, ballPosition.y, 10, 0, 2 * Math.PI);
+                this.ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
+                this.ctx.fill();
+                this.ctx.strokeStyle = 'white';
+                this.ctx.lineWidth = 3;
+                this.ctx.stroke();
+
+                // Draw motion trail
+                this.drawMotionTrail();
             }
-        };
+        }
 
-        // Log the HSV ranges for debugging
-        console.log('Updated HSV ranges:', this.hsvRanges);
+        this.frameCount++;
+        requestAnimationFrame(() => this.track());
+    }
+
+    detectBall(imageData) {
+        const data = imageData.data;
+        const width = imageData.width;
+        const height = imageData.height;
+        let maxBlobSize = 0;
+        let maxBlobCenter = null;
+
+        // Use a larger step size for initial scan
+        const stepSize = 4;
+        const minBlobSize = 20; // Minimum size to consider as a ball
+
+        // First pass: Quick scan for potential ball locations
+        for (let y = 0; y < height; y += stepSize) {
+            for (let x = 0; x < width; x += stepSize) {
+                const idx = (y * width + x) * 4;
+                const r = data[idx];
+                const g = data[idx + 1];
+                const b = data[idx + 2];
+                const hsv = this.rgbToHsv(r, g, b);
+
+                if (this.isInHSVRange(hsv)) {
+                    const blobSize = this.getBlobSize(imageData, x, y);
+                    if (blobSize > maxBlobSize) {
+                        maxBlobSize = blobSize;
+                        maxBlobCenter = { x, y };
+                    }
+                }
+            }
+        }
+
+        // Second pass: Refine the position if we found a potential ball
+        if (maxBlobSize >= minBlobSize && maxBlobCenter) {
+            return this.refineBallPosition(imageData, maxBlobCenter);
+        }
+
+        return null;
+    }
+
+    refineBallPosition(imageData, center) {
+        const data = imageData.data;
+        const width = imageData.width;
+        const height = imageData.height;
+        let sumX = 0;
+        let sumY = 0;
+        let count = 0;
+        const radius = 20; // Search radius around the center
+
+        for (let y = Math.max(0, center.y - radius); y < Math.min(height, center.y + radius); y++) {
+            for (let x = Math.max(0, center.x - radius); x < Math.min(width, center.x + radius); x++) {
+                const idx = (y * width + x) * 4;
+                const r = data[idx];
+                const g = data[idx + 1];
+                const b = data[idx + 2];
+                const hsv = this.rgbToHsv(r, g, b);
+
+                if (this.isInHSVRange(hsv)) {
+                    sumX += x;
+                    sumY += y;
+                    count++;
+                }
+            }
+        }
+
+        if (count > 0) {
+            return {
+                x: Math.round(sumX / count),
+                y: Math.round(sumY / count)
+            };
+        }
+
+        return center;
+    }
+
+    updateMotionHistory(position) {
+        this.motionHistory.push(position);
+        if (this.motionHistory.length > this.maxMotionHistory) {
+            this.motionHistory.shift();
+        }
+    }
+
+    hasSignificantMotion() {
+        if (this.motionHistory.length < 2) return false;
+
+        const lastPos = this.motionHistory[this.motionHistory.length - 1];
+        const prevPos = this.motionHistory[this.motionHistory.length - 2];
+        
+        const dx = lastPos.x - prevPos.x;
+        const dy = lastPos.y - prevPos.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        return distance >= this.motionThreshold;
+    }
+
+    drawMotionTrail() {
+        if (this.motionHistory.length < 2) return;
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(this.motionHistory[0].x, this.motionHistory[0].y);
+        
+        for (let i = 1; i < this.motionHistory.length; i++) {
+            this.ctx.lineTo(this.motionHistory[i].x, this.motionHistory[i].y);
+        }
+
+        this.ctx.strokeStyle = 'rgba(0, 255, 0, 0.3)';
+        this.ctx.lineWidth = 2;
+        this.ctx.stroke();
     }
 
     getAverageColor(imageData) {
@@ -264,167 +451,6 @@ class BallTracker {
         return { h, s: s * 255, v: v * 255 };
     }
 
-    startTracking() {
-        this.isTracking = true;
-        this.debugOverlay.style.display = 'block';
-        this.track();
-    }
-
-    stopTracking() {
-        this.isTracking = false;
-        this.debugOverlay.style.display = 'none';
-    }
-
-    track() {
-        if (!this.isTracking) return;
-
-        const currentTime = performance.now();
-        const deltaTime = (currentTime - this.lastUpdateTime) / 1000;
-        this.lastUpdateTime = currentTime;
-
-        // Clear the canvas
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        
-        // Draw the video frame
-        this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
-        
-        const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-        const ballPosition = this.detectBall(imageData);
-
-        if (ballPosition) {
-            this.lastPosition = this.currentPosition;
-            this.currentPosition = ballPosition;
-
-            // Calculate speed if we have a previous position
-            if (this.lastPosition && deltaTime > 0) {
-                const dx = ballPosition.x - this.lastPosition.x;
-                const dy = ballPosition.y - this.lastPosition.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                
-                // Convert pixels to feet and calculate speed
-                const distanceInFeet = distance / this.pixelsPerFoot;
-                this.currentSpeed = distanceInFeet / deltaTime;
-
-                // Determine which player hit the ball based on position and direction
-                const tableCenter = this.canvas.width / 2;
-                if (dx > 0 && ballPosition.x < tableCenter) {
-                    if (this.lastPlayer !== 1) {
-                        this.lastPlayer = 1;
-                        this.player1Speed = this.currentSpeed;
-                        this.addShotToHistory(1, this.currentSpeed);
-                    }
-                } else if (dx < 0 && ballPosition.x > tableCenter) {
-                    if (this.lastPlayer !== 2) {
-                        this.lastPlayer = 2;
-                        this.player2Speed = this.currentSpeed;
-                        this.addShotToHistory(2, this.currentSpeed);
-                    }
-                }
-            }
-
-            // Draw ball position
-            this.ctx.beginPath();
-            this.ctx.arc(ballPosition.x, ballPosition.y, 10, 0, 2 * Math.PI);
-            this.ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
-            this.ctx.fill();
-            this.ctx.strokeStyle = 'white';
-            this.ctx.lineWidth = 3;
-            this.ctx.stroke();
-
-            // Draw speed information (only update every 5 frames)
-            if (this.frameCount % 5 === 0) {
-                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                this.ctx.fillRect(10, 10, 300, 100);
-                this.ctx.fillStyle = 'white';
-                this.ctx.font = '14px monospace';
-                this.ctx.fillText(`Current Speed: ${this.currentSpeed.toFixed(1)} ft/s`, 20, 30);
-                this.ctx.fillText(`Player 1 Speed: ${this.player1Speed.toFixed(1)} ft/s`, 20, 50);
-                this.ctx.fillText(`Player 2 Speed: ${this.player2Speed.toFixed(1)} ft/s`, 20, 70);
-                if (this.lastPlayer) {
-                    this.ctx.fillText(`Last Hit: Player ${this.lastPlayer}`, 20, 90);
-                }
-            }
-
-            // Add a pulsing effect (only if debug mode is on and every 5 frames)
-            if (this.debugMode && this.frameCount % 5 === 0) {
-                this.ctx.beginPath();
-                this.ctx.arc(ballPosition.x, ballPosition.y, 15, 0, 2 * Math.PI);
-                this.ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
-                this.ctx.lineWidth = 2;
-                this.ctx.stroke();
-            }
-        } else if (this.debugMode && this.frameCount % 10 === 0) {
-            this.debugOverlay.textContent = 'No ball detected';
-        }
-
-        this.frameCount = (this.frameCount || 0) + 1;
-        requestAnimationFrame(() => this.track());
-    }
-
-    detectBall(imageData) {
-        const data = imageData.data;
-        const width = imageData.width;
-        const height = imageData.height;
-        let maxBlobSize = 0;
-        let maxBlobCenter = null;
-        let debugPixels = [];
-        let totalPixelsChecked = 0;
-        let matchingPixels = 0;
-
-        // Adaptive step size based on ball size
-        let stepSize = 2;
-        const maxBlobSizeThreshold = 100; // Maximum blob size before increasing step size
-
-        // Simple blob detection with improved sampling
-        for (let y = 0; y < height; y += stepSize) {
-            for (let x = 0; x < width; x += stepSize) {
-                totalPixelsChecked++;
-                const idx = (y * width + x) * 4;
-                const r = data[idx];
-                const g = data[idx + 1];
-                const b = data[idx + 2];
-                const hsv = this.rgbToHsv(r, g, b);
-
-                if (this.isInHSVRange(hsv)) {
-                    matchingPixels++;
-                    // Only check blob size if we haven't found a large blob yet
-                    if (maxBlobSize < maxBlobSizeThreshold) {
-                        const blobSize = this.getBlobSize(imageData, x, y);
-                        if (blobSize > maxBlobSize) {
-                            maxBlobSize = blobSize;
-                            maxBlobCenter = { x, y };
-                            // Increase step size if we find a large blob
-                            if (blobSize > 50) {
-                                stepSize = 4;
-                            }
-                        }
-                    } else {
-                        // If we already found a large blob, just update the center
-                        maxBlobCenter = { x, y };
-                    }
-
-                    if (this.debugMode && debugPixels.length < 25) {
-                        debugPixels.push({ x, y, hsv });
-                    }
-                }
-            }
-        }
-
-        if (this.debugMode && this.frameCount % 10 === 0) {
-            // Draw debug pixels
-            debugPixels.forEach(pixel => {
-                this.ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
-                this.ctx.fillRect(pixel.x - 1, pixel.y - 1, 3, 3);
-            });
-
-            // Update debug overlay with more information
-            const matchPercentage = (matchingPixels / totalPixelsChecked * 100).toFixed(2);
-            this.debugOverlay.textContent = `Matches: ${matchPercentage}% | Blob Size: ${maxBlobSize} | Step: ${stepSize}`;
-        }
-
-        return maxBlobSize > 3 ? maxBlobCenter : null;
-    }
-
     isInHSVRange(hsv) {
         // Check if hue is in the orange range (accounting for circular nature of hue)
         const isHueInRange = (hsv.h >= this.hsvRanges.h.min && hsv.h <= this.hsvRanges.h.max) ||
@@ -483,14 +509,6 @@ class BallTracker {
             x: this.currentPosition.x - this.lastPosition.x,
             y: this.currentPosition.y - this.lastPosition.y
         };
-    }
-
-    // Add method to calibrate pixels per foot
-    calibrateTableSize(tableLengthInFeet) {
-        // Assuming the table takes up 80% of the canvas width
-        const tableWidthInPixels = this.canvas.width * 0.8;
-        this.pixelsPerFoot = tableWidthInPixels / tableLengthInFeet;
-        console.log(`Calibrated pixels per foot: ${this.pixelsPerFoot}`);
     }
 
     addShotToHistory(player, speed) {

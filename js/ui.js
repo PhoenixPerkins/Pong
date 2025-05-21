@@ -12,7 +12,7 @@ class UI {
     }
 
     updateSpeed(speed) {
-        this.currentSpeedElement.textContent = `${speed.toFixed(1)} km/h`;
+        this.currentSpeedElement.textContent = `${speed.toFixed(1)} ft/s`;
     }
 
     updateLastHit(player) {
@@ -20,14 +20,32 @@ class UI {
     }
 
     updateMaxSpeed(speed) {
-        this.maxSpeedElement.textContent = `${speed.toFixed(1)} km/h`;
+        this.maxSpeedElement.textContent = `${speed.toFixed(1)} ft/s`;
+    }
+
+    showTableCalibrationInstructions() {
+        this.calibrationInstructions.innerHTML = `
+            <h2>Table Calibration</h2>
+            <p>Click on both ends of the table to calibrate the distance.</p>
+            <p>First click one end, then click the other end.</p>
+        `;
+        this.calibrationInstructions.classList.remove('hidden');
     }
 
     showCalibrationInstructions() {
+        this.calibrationInstructions.innerHTML = `
+            <h2>Ball Calibration</h2>
+            <p>Click on the orange ping pong ball to help the system learn its color.</p>
+            <p>The system will automatically adjust to track the ball's movement.</p>
+        `;
         this.calibrationInstructions.classList.remove('hidden');
     }
 
     hideCalibrationInstructions() {
+        this.calibrationInstructions.classList.add('hidden');
+    }
+
+    hideTableCalibrationInstructions() {
         this.calibrationInstructions.classList.add('hidden');
     }
 
